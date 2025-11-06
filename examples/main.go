@@ -10,7 +10,7 @@ import (
 
 func main() {
 	fmt.Println("=== Simple Redis Async Queue Test ===")
-	
+
 	// Step 1: Configure Redis connection
 	redisOpt := &async.RedisOpt{
 		Addr:     "localhost:6379", // Make sure Redis is running on this address
@@ -22,34 +22,34 @@ func main() {
 	fmt.Println("✓ Client created")
 
 	// Step 3: Create workers to process tasks
-	launcher := async.NewWorkers(2, redisOpt) // 2 concurrent workers
+	launcher := async.NewLauncher(2, redisOpt) // 2 concurrent workers
 	fmt.Println("✓ Worker launcher created")
 
 	// Step 4: Define how to handle different types of tasks
 	taskHandler := func(task *async.Task) error {
 		fmt.Printf("🔄 Processing task: %s\n", task.Type)
-		
+
 		switch task.Type {
 		case "send_email":
 			email := task.Payload["email"].(string)
 			subject := task.Payload["subject"].(string)
 			fmt.Printf("  📧 Sending email to: %s, Subject: %s\n", email, subject)
 			time.Sleep(1 * time.Second) // Simulate sending email
-			
+
 		case "process_image":
 			filename := task.Payload["filename"].(string)
 			fmt.Printf("  🖼️  Processing image: %s\n", filename)
 			time.Sleep(2 * time.Second) // Simulate image processing
-			
+
 		case "generate_report":
 			reportType := task.Payload["type"].(string)
 			fmt.Printf("  📊 Generating %s report\n", reportType)
 			time.Sleep(3 * time.Second) // Simulate report generation
-			
+
 		default:
 			fmt.Printf("  ❓ Unknown task type: %s\n", task.Type)
 		}
-		
+
 		fmt.Printf("✅ Completed task: %s\n", task.Type)
 		return nil
 	}
@@ -65,7 +65,7 @@ func main() {
 
 	// Step 6: Enqueue some immediate tasks
 	fmt.Println("\n=== Enqueuing Immediate Tasks ===")
-	
+
 	tasks := []*async.Task{
 		{
 			Type: "send_email",
@@ -101,14 +101,14 @@ func main() {
 
 	// Step 7: Enqueue a scheduled task
 	fmt.Println("\n=== Enqueuing Scheduled Task ===")
-	
+
 	scheduledTask := &async.Task{
 		Type: "generate_report",
 		Payload: map[string]interface{}{
 			"type": "daily_sales",
 		},
 	}
-	
+
 	// Schedule this task to run 5 seconds from now
 	executeAt := time.Now().Add(5 * time.Second)
 	err := client.Process(scheduledTask, executeAt)
@@ -121,7 +121,7 @@ func main() {
 	// Step 8: Wait and observe
 	fmt.Println("\n=== Watching Tasks Execute ===")
 	fmt.Println("⏳ Waiting for tasks to complete...")
-	
+
 	// Wait for all tasks to complete
 	time.Sleep(10 * time.Second)
 
@@ -134,7 +134,7 @@ func main() {
 			"subject": "Test completed successfully!",
 		},
 	}
-	
+
 	err = client.Process(finalTask, time.Now())
 	if err != nil {
 		log.Printf("❌ Failed to enqueue final task: %v", err)
@@ -148,7 +148,7 @@ func main() {
 	fmt.Println("\n=== Test Complete! ===")
 	fmt.Println("🎉 All tasks have been processed successfully!")
 	fmt.Println("Note: Workers are still running. Press Ctrl+C to stop.")
-	
+
 	// Keep the program running
 	select {}
 }
