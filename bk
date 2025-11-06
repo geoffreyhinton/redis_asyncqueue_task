@@ -1,0 +1,176 @@
+package main
+
+import (
+	"fmt"
+	"log"
+	"time"
+
+	async "github.com/geoffreyhinton/redis_asyncqueue_task"
+)
+
+func main() {
+	// Redis configuration
+	redisOpt := &async.RedisOpt{
+		Addr:     "localhost:6379",
+		Password: "", // No password for local Redis
+	}
+
+	// Test 1: Create client and enqueue immediate tasks
+	fmt.Println("=== Testing Immediate Task Processing ===")
+	client := async.NewClient(redisOpt)
+
+	// Create some test tasks
+	task1 := &async.Task{
+		Type: "email",
+		Payload: map[string]interface{}{
+			"to":      "user@example.com",
+			"subject": "Welcome!",
+			"body":    "Welcome to our service!",
+		},
+	}
+
+	task2 := &async.Task{
+		Type: "image_resize",
+		Payload: map[string]interface{}{
+			"image_url": "https://example.com/image.jpg",
+			"width":     800,
+			"height":    600,
+		},
+	}
+
+	task3 := &async.Task{
+		Type: "notification",
+		Payload: map[string]interface{}{
+			"user_id": 12345,
+			"message": "Your order has been processed",
+		},
+	}
+
+	// Enqueue immediate tasks (execute now)
+	now := time.Now()
+	err := client.Process(task1, now)
+	if err != nil {
+		log.Printf("Failed to enqueue task1: %v", err)
+	} else {
+		fmt.Println("✓ Enqueued immediate email task")
+	}
+
+	err = client.Process(task2, now)
+	if err != nil {
+		log.Printf("Failed to enqueue task2: %v", err)
+	} else {
+		fmt.Println("✓ Enqueued immediate image resize task")
+	}
+
+	// Test 2: Enqueue scheduled tasks
+	fmt.Println("\n=== Testing Scheduled Task Processing ===")
+
+	// Schedule a task for 5 seconds from now
+	futureTime := time.Now().Add(5 * time.Second)
+	err = client.Process(task3, futureTime)
+	if err != nil {
+		log.Printf("Failed to enqueue scheduled task: %v", err)
+	} else {
+		fmt.Printf("✓ Scheduled notification task for %s\n", futureTime.Format("15:04:05"))
+	}
+
+	// Schedule another task for 10 seconds from now
+	laterTime := time.Now().Add(10 * time.Second)
+	laterTask := &async.Task{
+		Type: "cleanup",
+		Payload: map[string]interface{}{
+			"resource":   "temp_files",
+			"older_than": "1h",
+		},
+	}
+	err = client.Process(laterTask, laterTime)
+	if err != nil {
+		log.Printf("Failed to enqueue later task: %v", err)
+	} else {
+		fmt.Printf("✓ Scheduled cleanup task for %s\n", laterTime.Format("15:04:05"))
+	}
+
+	// Test 3: Start workers to process tasks
+	fmt.Println("\n=== Starting Workers ===")
+	launcher := async.NewWorkers(3, redisOpt) // Pool of 3 workers
+
+	// Define task handlers
+	taskHandler := func(task *async.Task) error {
+		fmt.Printf("🔄 Processing task: %s\n", task.Type)
+
+		switch task.Type {
+		case "email":
+			to := task.Payload["to"].(string)
+			subject := task.Payload["subject"].(string)
+			fmt.Printf("  📧 Sending email to %s: %s\n", to, subject)
+			time.Sleep(1 * time.Second) // Simulate email sending
+
+		case "image_resize":
+			imageURL := task.Payload["image_url"].(string)
+			width := int(task.Payload["width"].(float64))
+			height := int(task.Payload["height"].(float64))
+			fmt.Printf("  🖼️  Resizing image %s to %dx%d\n", imageURL, width, height)
+			time.Sleep(2 * time.Second) // Simulate image processing
+
+		case "notification":
+			userID := int(task.Payload["user_id"].(float64))
+			message := task.Payload["message"].(string)
+			fmt.Printf("  🔔 Sending notification to user %d: %s\n", userID, message)
+			time.Sleep(500 * time.Millisecond) // Simulate notification sending
+
+		case "cleanup":
+			resource := task.Payload["resource"].(string)
+			olderThan := task.Payload["older_than"].(string)
+			fmt.Printf("  🧹 Cleaning up %s older than %s\n", resource, olderThan)
+			time.Sleep(1 * time.Second) // Simulate cleanup
+
+		default:
+			return fmt.Errorf("unknown task type: %s", task.Type)
+		}
+
+		fmt.Printf("✅ Completed task: %s\n", task.Type)
+		return nil
+	}
+
+	// Start workers in a goroutine so we can continue the main function
+	go func() {
+		fmt.Println("🚀 Workers started, waiting for tasks...")
+		launcher.Start(taskHandler)
+	}()
+
+	// Give some time for immediate tasks to be processed
+	time.Sleep(3 * time.Second)
+
+	// Add a few more immediate tasks while workers are running
+	fmt.Println("\n=== Adding More Tasks While Workers Are Running ===")
+
+	moreTask := &async.Task{
+		Type: "email",
+		Payload: map[string]interface{}{
+			"to":      "admin@example.com",
+			"subject": "System Alert",
+			"body":    "Everything is working fine!",
+		},
+	}
+
+	err = client.Process(moreTask, time.Now())
+	if err != nil {
+		log.Printf("Failed to enqueue additional task: %v", err)
+	} else {
+		fmt.Println("✓ Added additional email task")
+	}
+
+	// Wait for scheduled tasks to be processed
+	fmt.Println("\n=== Waiting for Scheduled Tasks ===")
+	fmt.Println("⏳ Waiting for scheduled tasks to execute...")
+
+	// Wait long enough for all scheduled tasks to be processed
+	time.Sleep(15 * time.Second)
+
+	fmt.Println("\n=== Test Complete ===")
+	fmt.Println("Check the output above to see tasks being processed!")
+	fmt.Println("Note: Workers will continue running. Press Ctrl+C to stop.")
+
+	// Keep the program running to see scheduled tasks execute
+	select {} // Block forever
+}

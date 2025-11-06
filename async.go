@@ -3,7 +3,6 @@ package async
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"math"
 	"math/rand"
 	"strconv"
@@ -102,6 +101,7 @@ type Launcher struct {
 	poolTokens chan struct{}
 	running    bool
 	poller     *poller
+	manager    *manager
 }
 
 // NewWorkers creates and returns a new Workers.
@@ -113,10 +113,12 @@ func NewWorkers(poolSize int, opt *RedisOpt) *Launcher {
 		avgInterval: 5 * time.Second,
 		zsets:       []string{scheduled, retry},
 	}
+	manager := newManager(rdb, poolSize, nil)
 	return &Launcher{
 		rdb:        rdb,
 		poolTokens: make(chan struct{}, poolSize),
 		poller:     poller,
+		manager:    manager,
 	}
 }
 
@@ -124,60 +126,29 @@ func NewWorkers(poolSize int, opt *RedisOpt) *Launcher {
 type TaskHandler func(*Task) error
 
 // Start starts the workers and scheduler with a given handler.
-func (w *Launcher) Start(handler TaskHandler) {
-	if w.running {
+func (l *Launcher) Start(handler TaskHandler) {
+	if l.running {
 		return
 	}
-	w.running = true
-	go w.poller.start()
+	l.running = true
+	go l.poller.start()
 
-	for {
-		// pull message out of the queue and process it
-		// TODO(vinh): sort the list of queues in order of priority
-		res, err := w.rdb.BLPop(5*time.Second, listQueues(w.rdb)...).Result() // NOTE: BLPOP needs to time out because if case a new queue is added.
-		if err != nil {
-			if err != redis.Nil {
-				log.Printf("BLPOP command failed: %v\n", err)
-			}
-			continue
-		}
+	l.running = true
+	l.manager.handler = handler
 
-		q, data := res[0], res[1]
-		fmt.Printf("perform task %v from %s\n", data, q)
-		var msg taskMessage
-		err = json.Unmarshal([]byte(data), &msg)
-		if err != nil {
-			log.Printf("[Servere Error] could not parse json encoded message %s: %v", data, err)
-			continue
-		}
+	l.poller.start()
+	l.manager.start()
+}
 
-		t := &Task{Type: msg.Type, Payload: msg.Payload}
-		w.poolTokens <- struct{}{} // acquire a token
-		go func(task *Task) {
-			defer func() { <-w.poolTokens }() // release the token
-			err := handler(task)
-			if err != nil {
-				if msg.Retried >= msg.Retry {
-					// TODO(vinh): Add the task to "dead" collection
-					fmt.Println("Retry exhausted!!!")
-					if err := kill(w.rdb, &msg); err != nil {
-						log.Printf("[SEVERE ERROR] could not kill msg %+v: %v\n", msg, err)
-					}
-					return
-				}
-				retryAt := time.Now().Add(delaySeconds((msg.Retried)))
-				fmt.Printf("[DEBUG] retying the task in %v\n", retryAt.Sub(time.Now()))
-				msg.Retried++
-				msg.ErrorMsg = err.Error()
-				if err := zadd(w.rdb, retry, float64(retryAt.Unix()), &msg); err != nil {
-					// TODO(vinh): Not sure how to handle this error
-					log.Printf("[SEVERE ERROR] could not add msg %+v to 'retry' set: %v\n", msg, err)
-					return
-				}
-
-			}
-		}(t)
+// Stop stops both manager and poller.
+func (l *Launcher) Stop() {
+	if !l.running {
+		return
 	}
+	l.running = false
+
+	l.poller.terminate()
+	l.manager.terminate()
 }
 
 // push pushes the task to the specified queue to get picked up by a worker.
