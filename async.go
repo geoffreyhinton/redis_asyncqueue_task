@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
+	"math/rand"
 	"strconv"
 	"time"
 
@@ -140,16 +142,16 @@ func (w *Workers) Run(handler TaskHandler) {
 		go func(task *Task) {
 			err := handler(task)
 			if err != nil {
-				if msg.Retry == 0 {
+				if msg.Retried >= msg.Retry {
 					// TODO(vinh): Add the task to "dead" collection
-					fmt.Println("Retry exausted!!!")
+					fmt.Println("Retry exhausted!!!")
 					return
 				}
-				fmt.Println("RETRY!!!")
-				delay := 10 * time.Second // TODO(vinh): Implement exponential backoff.
-				msg.Retry--
+				retryAt := time.Now().Add(delaySeconds((msg.Retried)))
+				fmt.Printf("[DEBUG] retying the task in %v\n", retryAt.Sub(time.Now()))
+				msg.Retried++
 				msg.ErrorMsg = err.Error()
-				if err := zadd(w.rdb, retry, float64(time.Now().Add(delay).Unix()), &msg); err != nil {
+				if err := zadd(w.rdb, retry, float64(retryAt.Unix()), &msg); err != nil {
 					// TODO(vinh): Not sure how to handle this error
 					log.Printf("[SEVERE ERROR] could not add msg %+v to 'retry' set: %v\n", msg, err)
 					return
@@ -231,4 +233,10 @@ func zadd(rdb *redis.Client, zset string, zscore float64, msg *taskMessage) erro
 // listQueues returns the list of all queues.
 func listQueues(rdb *redis.Client) []string {
 	return rdb.SMembers(allQueues).Val()
+}
+
+func delaySeconds(count int) time.Duration {
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	s := int(math.Pow(float64(count), 4)) + 15 + (r.Intn(30) * (count + 1))
+	return time.Duration(s) * time.Second
 }
