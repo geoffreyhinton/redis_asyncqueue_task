@@ -25,7 +25,10 @@ func (p *poller) start() {
 			// case <-ticker.C:
 			// 	p.enqueue()
 			case <-p.done:
-				p.shutdown()
+				fmt.Println("-------------[Poller]---------------")
+				fmt.Println("Poller shutting down...")
+				fmt.Println("------------------------------------")
+				return
 			default:
 				p.enqueue()
 				time.Sleep(p.avgInterval)
@@ -69,14 +72,8 @@ func (p *poller) enqueue() {
 	}
 }
 
-func (p *poller) shutdown() {
-	// TODO(vinh): implement this. Gracefully shutdown all active goroutines.
-	fmt.Println("-------------[Poller]---------------")
-	// Stop the ticker
-	// wait for active goroutines to finish
-	// close the done channel
-	// log shutdown complete
-	fmt.Println("Poller shutting down...")
-	fmt.Println("------------------------------------")
-
+func (p *poller) terminate() {
+	// send a signal to the manager goroutine to stop
+	// processing tasks from the queue.
+	p.done <- struct{}{}
 }

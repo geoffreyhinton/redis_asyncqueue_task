@@ -27,6 +27,13 @@ func newManager(rdb *redis.Client, numWorkers int, handler TaskHandler) *manager
 
 func (m *manager) terminate() {
 	m.done <- struct{}{}
+	// wait for all workers to finish
+	fmt.Println("-- Waiting for all workers to finish --")
+	for i := 0; i < cap(m.sema); i++ {
+		// block until all workers have released the token
+		m.sema <- struct{}{}
+	}
+	fmt.Println("--- All workers have finished! ----")
 }
 
 func (m *manager) start() {
@@ -34,7 +41,10 @@ func (m *manager) start() {
 		for {
 			select {
 			case <-m.done:
-				m.shutdown()
+				fmt.Println("-------------[Manager]---------------")
+				fmt.Println("Manager shutting down...")
+				fmt.Println("-------------------------------------")
+				return
 			default:
 				m.processTasks()
 			}
