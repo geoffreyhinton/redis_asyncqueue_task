@@ -101,14 +101,22 @@ type Workers struct {
 	// does not exceed the limit.
 	poolTokens chan struct{}
 	running    bool
+	poller     *poller
 }
 
 // NewWorkers creates and returns a new Workers.
 func NewWorkers(poolSize int, opt *RedisOpt) *Workers {
 	rdb := redis.NewClient(&redis.Options{Addr: opt.Addr, Password: opt.Password})
+	poller := &poller{
+		rdb:         rdb,
+		done:        make(chan struct{}),
+		avgInterval: 5 * time.Second,
+		zsets:       []string{scheduled, retry},
+	}
 	return &Workers{
 		rdb:        rdb,
 		poolTokens: make(chan struct{}, poolSize),
+		poller:     poller,
 	}
 }
 
@@ -121,7 +129,7 @@ func (w *Workers) Run(handler TaskHandler) {
 		return
 	}
 	w.running = true
-	go w.pollDeferred()
+	go w.poller.start()
 
 	for {
 		// pull message out of the queue and process it
@@ -169,49 +177,6 @@ func (w *Workers) Run(handler TaskHandler) {
 
 			}
 		}(t)
-	}
-}
-
-func (w *Workers) pollDeferred() {
-	zsets := []string{scheduled, retry}
-	for {
-		for _, zset := range zsets {
-			// Get next items in the queue with scores (time to execute) <= now.
-			now := time.Now().Unix()
-			fmt.Printf("[DEBUG] polling ZSET %q\n", zset)
-			jobs, err := w.rdb.ZRangeByScore(zset,
-				&redis.ZRangeBy{
-					Min: "-inf",
-					Max: strconv.Itoa(int(now))}).Result()
-			fmt.Printf("len(jobs) = %d\n", len(jobs))
-			if err != nil {
-				log.Printf("radis command ZRANGEBYSCORE failed: %v\n", err)
-				continue
-			}
-			if len(jobs) == 0 {
-				fmt.Println("jobs empty")
-				continue
-			}
-
-			for _, j := range jobs {
-				var msg taskMessage
-				err = json.Unmarshal([]byte(j), &msg)
-				if err != nil {
-					fmt.Println("unmarshal failed")
-					continue
-				}
-
-				if w.rdb.ZRem(zset, j).Val() > 0 {
-					err = push(w.rdb, &msg)
-					if err != nil {
-						log.Printf("could not push task to queue %q: %v", msg.Queue, err)
-						// TODO(vinh): Handle this error properly. Add back to scheduled ZSET?
-						continue
-					}
-				}
-			}
-		}
-		time.Sleep(5 * time.Second)
 	}
 }
 
