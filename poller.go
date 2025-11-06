@@ -18,14 +18,17 @@ type poller struct {
 }
 
 func (p *poller) start() {
-	ticker := time.NewTicker(p.avgInterval)
+	// ticker := time.NewTicker(p.avgInterval)
 	go func() {
 		for {
 			select {
-			case <-ticker.C:
-				p.enqueue()
+			// case <-ticker.C:
+			// 	p.enqueue()
 			case <-p.done:
 				p.shutdown()
+			default:
+				p.enqueue()
+				time.Sleep(p.avgInterval)
 			}
 		}
 	}()
