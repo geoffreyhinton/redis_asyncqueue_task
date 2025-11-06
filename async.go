@@ -145,6 +145,9 @@ func (w *Workers) Run(handler TaskHandler) {
 				if msg.Retried >= msg.Retry {
 					// TODO(vinh): Add the task to "dead" collection
 					fmt.Println("Retry exhausted!!!")
+					if err := kill(w.rdb, &msg); err != nil {
+						log.Printf("[SEVERE ERROR] could not kill msg %+v: %v\n", msg, err)
+					}
 					return
 				}
 				retryAt := time.Now().Add(delaySeconds((msg.Retried)))
@@ -239,4 +242,22 @@ func delaySeconds(count int) time.Duration {
 	r := rand.New(rand.NewSource(time.Now().UnixNano()))
 	s := int(math.Pow(float64(count), 4)) + 15 + (r.Intn(30) * (count + 1))
 	return time.Duration(s) * time.Second
+}
+
+const maxDeadTask = 100
+const deadExpirationInDays = 90
+
+func kill(rdb *redis.Client, msg *taskMessage) error {
+	bytes, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("could not encode task into JSON: %v", err)
+
+	}
+	now := time.Now()
+	pipe := rdb.Pipeline()
+	pipe.ZAdd(dead, &redis.Z{Member: string(bytes), Score: float64(now.Unix())})
+	pipe.ZRemRangeByScore(dead, "-inf", strconv.Itoa(int(now.AddDate(0, 0, -deadExpirationInDays).Unix())))
+	pipe.ZRemRangeByRank(dead, 0, int64(-maxDeadTask-1))
+	_, err = pipe.Exec()
+	return err
 }
