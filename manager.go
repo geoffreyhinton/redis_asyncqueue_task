@@ -1,22 +1,27 @@
 package async
 
 import (
-	"encoding/json"
 	"fmt"
 	"log"
+	"math"
+	"math/rand"
 	"time"
-
-	"github.com/go-redis/redis/v7"
 )
 
 type manager struct {
-	rdb     *redis.Client
+	rdb *rdb
+
 	handler TaskHandler
-	sema    chan struct{}
-	done    chan struct{}
+
+	// sema is a counting semaphore to ensure the number of active workers
+	// does not exceed the limit
+	sema chan struct{}
+
+	// channel to communicate back to the long running "manager" goroutine.
+	done chan struct{}
 }
 
-func newManager(rdb *redis.Client, numWorkers int, handler TaskHandler) *manager {
+func newManager(rdb *rdb, numWorkers int, handler TaskHandler) *manager {
 	return &manager{
 		rdb:     rdb,
 		handler: handler,
@@ -26,9 +31,11 @@ func newManager(rdb *redis.Client, numWorkers int, handler TaskHandler) *manager
 }
 
 func (m *manager) terminate() {
+	// send a signal to the manager goroutine to stop
+	// processing tasks from the queue.
 	m.done <- struct{}{}
-	// wait for all workers to finish
-	fmt.Println("-- Waiting for all workers to finish --")
+
+	fmt.Println("--- Waiting for all workers to finish ---")
 	for i := 0; i < cap(m.sema); i++ {
 		// block until all workers have released the token
 		m.sema <- struct{}{}
@@ -53,48 +60,54 @@ func (m *manager) start() {
 }
 
 func (m *manager) processTasks() {
-	res, err := m.rdb.BLPop(5*time.Second, listQueues(m.rdb)...).Result()
+	// pull message out of the queue and process it
+	// TODO(VINH): sort the list of queues in order of priority
+	msg, err := m.rdb.bpop(5*time.Second, m.rdb.listQueues()...)
 	if err != nil {
-		if err != redis.Nil {
-			log.Printf("redis BLPop failed: %v\n", err)
+		switch err {
+		case errQueuePopTimeout:
+			// timed out, this is a normal behavior.
+			return
+		case errDeserializeTask:
+			log.Println("[Servere Error] could not parse json encoded message")
+			return
+		default:
+			log.Printf("[Servere Error] unexpected error while pulling message out of queues: %v\n", err)
+			return
 		}
-		return
 	}
-	q, data := res[0], res[1]
-	fmt.Printf("perform task %v from %s\n", data, q)
-	var msg taskMessage
-	err = json.Unmarshal([]byte(data), &msg)
-	if err != nil {
-		log.Printf("failed to unmarshal task message: %v\n", err)
-		return
-	}
+
 	t := &Task{Type: msg.Type, Payload: msg.Payload}
-	m.sema <- struct{}{} // acquire semaphore locks
+	m.sema <- struct{}{} // acquire token
 	go func(task *Task) {
-		defer func() { <-m.sema }() // release semaphore locks
+		defer func() { <-m.sema }() // release token
 		err := m.handler(task)
 		if err != nil {
-			log.Printf("task handler error: %v", err)
 			if msg.Retried >= msg.Retry {
 				fmt.Println("Retry exhausted!!!")
+				if err := m.rdb.kill(msg); err != nil {
+					log.Printf("[SERVER ERROR] could not add task %+v to 'dead' set\n", err)
+				}
+				return
 			}
-		}
-		fmt.Println("RETRY!!!")
-		retryAt := time.Now().Add(delaySeconds((msg.Retried)))
-		fmt.Printf("[DEBUG] retying the task in %v\n", retryAt.Sub(time.Now()))
-		msg.Retried++
-		msg.ErrorMsg = err.Error()
-		if err := zadd(m.rdb, retry, float64(retryAt.Unix()), &msg); err != nil {
-			// TODO(vinh): finding way to ensure how to handle this error
-			log.Printf("[SEVERE ERROR] could not add msg %+v to 'retry' set: %v\n", msg, err)
-			return
+			fmt.Println("RETRY!!!")
+			retryAt := time.Now().Add(delaySeconds((msg.Retried)))
+			fmt.Printf("[DEBUG] retying the task in %v\n", retryAt.Sub(time.Now()))
+			msg.Retried++
+			msg.ErrorMsg = err.Error()
+			if err := m.rdb.zadd(retry, float64(retryAt.Unix()), msg); err != nil {
+				// TODO(vinh): Not sure how to handle this error
+				log.Printf("[SEVERE ERROR] could not add msg %+v to 'retry' set: %v\n", msg, err)
+				return
+			}
 		}
 	}(t)
 }
 
-func (m *manager) shutdown() {
-	// TODO(vinh): implement this. Gracefully shutdown all active goroutines.
-	fmt.Println("-------------[Manager]---------------")
-	fmt.Println("Manager shutting down...")
-	fmt.Println("------------------------------------")
+// delaySeconds returns a number seconds to delay before retrying.
+// Formula taken from https://github.com/mperham/sidekiq.
+func delaySeconds(count int) time.Duration {
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	s := int(math.Pow(float64(count), 4)) + 15 + (r.Intn(30) * (count + 1))
+	return time.Duration(s) * time.Second
 }
