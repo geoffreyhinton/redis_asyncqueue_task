@@ -6,6 +6,7 @@ import (
 	"math"
 	"math/rand"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/go-redis/redis/v7"
@@ -100,6 +101,7 @@ type Launcher struct {
 	// does not exceed the limit.
 	poolTokens chan struct{}
 	running    bool
+	mu         sync.Mutex
 	poller     *poller
 	manager    *manager
 }
@@ -127,6 +129,8 @@ type TaskHandler func(*Task) error
 
 // Start starts the workers and scheduler with a given handler.
 func (l *Launcher) Start(handler TaskHandler) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	if l.running {
 		return
 	}
@@ -142,6 +146,8 @@ func (l *Launcher) Start(handler TaskHandler) {
 
 // Stop stops both manager and poller.
 func (l *Launcher) Stop() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	if !l.running {
 		return
 	}
